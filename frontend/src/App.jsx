@@ -16,7 +16,10 @@ import {
   X,
   PlayCircle,
   PauseCircle,
-  StopCircle
+  StopCircle,
+  Key,
+  Info,
+  SlidersHorizontal
 } from 'lucide-react';
 
 export default function App() {
@@ -26,10 +29,15 @@ export default function App() {
   const [playlist, setPlaylist] = useState(null);
   const [filterText, setFilterText] = useState('');
   
+  // Spotify Developer Credentials (Optional, unlocks > 100 tracks pagination)
+  const [clientId, setClientId] = useState(() => localStorage.getItem('spotify_client_id') || '');
+  const [clientSecret, setClientSecret] = useState(() => localStorage.getItem('spotify_client_secret') || '');
+  const [showSettings, setShowSettings] = useState(false);
+
   // Selection state: Set of track ids
   const [selectedIds, setSelectedIds] = useState(new Set());
 
-  // Track download states: { [trackId]: { status: 'idle' | 'downloading' | 'done' | 'error', filename?: string, errorMsg?: string } }
+  // Track download states: { [trackId]: { status: 'idle' | 'downloading' | 'done' | 'error', filename?: string, display_name?: string, downloadUrl?: string } }
   const [trackStates, setTrackStates] = useState({});
 
   // Batch download state: 'idle' | 'running' | 'paused'
@@ -54,6 +62,13 @@ export default function App() {
       audio.pause();
     };
   }, []);
+
+  const saveCredentials = (newId, newSecret) => {
+    setClientId(newId);
+    setClientSecret(newSecret);
+    localStorage.setItem('spotify_client_id', newId.trim());
+    localStorage.setItem('spotify_client_secret', newSecret.trim());
+  };
 
   const togglePreview = (track) => {
     if (!track.preview_url) return;
@@ -85,7 +100,11 @@ export default function App() {
       const res = await fetch('/api/playlist/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl.trim() }),
+        body: JSON.stringify({ 
+          url: targetUrl.trim(),
+          client_id: clientId.trim() || undefined,
+          client_secret: clientSecret.trim() || undefined
+        }),
       });
 
       const data = await res.json();
@@ -94,7 +113,6 @@ export default function App() {
       }
 
       setPlaylist(data);
-      // Pre-select all tracks by default
       if (data.tracks && data.tracks.length > 0) {
         setSelectedIds(new Set(data.tracks.map(t => t.id)));
       }
@@ -163,7 +181,7 @@ export default function App() {
         [track.id]: { 
           status: 'done', 
           filename: data.filename, 
-          display_name: data.display_name, 
+          display_name: data.display_name,
           downloadUrl: data.download_url 
         }
       }));
@@ -185,7 +203,7 @@ export default function App() {
   const triggerBrowserDownload = (downloadUrl, filename) => {
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = filename || 'archivo';
+    if (filename) a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -202,7 +220,7 @@ export default function App() {
     return !isCancelledRef.current;
   };
 
-  // Batch download handler (supports pause/resume/cancel and packages as ZIP)
+  // Batch download handler
   const handleStartBatchDownload = async (targetTracks, groupName = 'playlist') => {
     if (!targetTracks || targetTracks.length === 0) return;
 
@@ -214,7 +232,6 @@ export default function App() {
     const downloadedFiles = [];
 
     for (let i = 0; i < targetTracks.length; i++) {
-      // Check pause or cancel
       const canProceed = await checkPauseOrCancel();
       if (!canProceed || isCancelledRef.current) {
         break;
@@ -227,7 +244,6 @@ export default function App() {
         currentTitle: `${track.artist} - ${track.title}`
       });
 
-      // If already finished, reuse
       if (trackStates[track.id]?.status === 'done') {
         downloadedFiles.push(trackStates[track.id].filename);
         continue;
@@ -239,16 +255,14 @@ export default function App() {
       }
     }
 
-    // If cancelled before packaging, finish cleanly
     if (isCancelledRef.current) {
       setBatchState('idle');
       setBatchProgress({ current: 0, total: 0, currentTitle: '' });
       return;
     }
 
-    // Package into ZIP
     if (downloadedFiles.length > 0) {
-      setBatchProgress(prev => ({ ...prev, currentTitle: 'Creando archivo ZIP...' }));
+      setBatchProgress(prev => ({ ...prev, currentTitle: 'Generando archivo ZIP...' }));
       try {
         const zipRes = await fetch('/api/download/zip', {
           method: 'POST',
@@ -318,7 +332,7 @@ export default function App() {
         zIndex: 50,
         padding: '16px 24px'
       }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{
               background: 'linear-gradient(135deg, #1db954, #1ed760)',
@@ -347,22 +361,144 @@ export default function App() {
                   320 kbps MP3 + ZIP
                 </span>
               </h1>
-              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Descarga por grupo con Pausa / Reanudar</p>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Descarga por grupo con Pausa / Reanudar e ID incremental</p>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1ed760' }}>
-            <span style={{
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              backgroundColor: '#1ed760',
-              boxShadow: '0 0 10px #1ed760'
-            }} />
-            <span>Servidor Activo</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <button
+              type="button"
+              onClick={() => setShowSettings(!showSettings)}
+              style={{
+                background: (clientId && clientSecret) ? 'rgba(29, 185, 84, 0.15)' : 'rgba(255, 255, 255, 0.08)',
+                color: (clientId && clientSecret) ? '#1ed760' : 'var(--text-secondary)',
+                border: (clientId && clientSecret) ? '1px solid rgba(29, 185, 84, 0.4)' : '1px solid var(--border-subtle)',
+                borderRadius: 9999,
+                padding: '6px 14px',
+                fontSize: 12,
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                cursor: 'pointer'
+              }}
+              title="Configurar credenciales gratuitas de Spotify Developer para playlists mayores a 100 canciones"
+            >
+              <Key size={14} />
+              <span>{(clientId && clientSecret) ? 'API Activa (+100)' : 'Configurar API (+100)'}</span>
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1ed760' }}>
+              <span style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                backgroundColor: '#1ed760',
+                boxShadow: '0 0 10px #1ed760'
+              }} />
+              <span>Servidor Activo</span>
+            </div>
           </div>
         </div>
       </header>
+
+      {/* API Credentials Modal / Drawer */}
+      {showSettings && (
+        <div style={{
+          background: 'rgba(18, 20, 27, 0.98)',
+          borderBottom: '1px solid rgba(29, 185, 84, 0.3)',
+          padding: '24px',
+          boxShadow: '0 8px 30px rgba(0, 0, 0, 0.6)'
+        }}>
+          <div style={{ maxWidth: 800, margin: '0 auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Key size={18} color="#1ed760" />
+                <h3 style={{ fontSize: 16, fontWeight: 700 }}>Desbloquear más de 100 canciones (Spotify Developer API)</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettings(false)}
+                className="btn-icon"
+                style={{ width: 28, height: 28 }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16, lineHeight: 1.6 }}>
+              Por defecto, Spotify limita las consultas públicas a <strong>100 canciones</strong>. Si tienes una playlist con más de 300 o 500 canciones, puedes ingresar aquí tu <strong>Client ID</strong> y <strong>Client Secret</strong> gratuitos desde el <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noreferrer" style={{ color: '#1ed760', textDecoration: 'underline' }}>Spotify Developer Dashboard</a> para habilitar la paginación completa.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Spotify Client ID</label>
+                <input
+                  type="text"
+                  placeholder="Ej. 271089e082be4301827170..."
+                  value={clientId}
+                  onChange={(e) => setClientId(e.target.value)}
+                  style={{
+                    width: '100%',
+                    height: 38,
+                    background: 'var(--bg-input)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 8,
+                    padding: '0 12px',
+                    color: '#fff',
+                    fontSize: 13,
+                    outline: 'none'
+                  }}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Spotify Client Secret</label>
+                <input
+                  type="password"
+                  placeholder="Ej. a8b4c2d1e9f0..."
+                  value={clientSecret}
+                  onChange={(e) => setClientSecret(e.target.value)}
+                  style={{
+                    width: '100%',
+                    height: 38,
+                    background: 'var(--bg-input)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 8,
+                    padding: '0 12px',
+                    color: '#fff',
+                    fontSize: 13,
+                    outline: 'none'
+                  }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              {(clientId || clientSecret) && (
+                <button
+                  type="button"
+                  onClick={() => saveCredentials('', '')}
+                  className="btn-secondary"
+                  style={{ height: 36, padding: '0 14px', fontSize: 12, color: '#f87171' }}
+                >
+                  Borrar Credenciales
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  saveCredentials(clientId, clientSecret);
+                  setShowSettings(false);
+                }}
+                className="btn-primary"
+                style={{ height: 36, padding: '0 18px', fontSize: 12 }}
+              >
+                Guardar y Aplicar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <main style={{ maxWidth: 1200, margin: '0 auto', padding: '36px 20px', width: '100%', flex: 1 }}>
@@ -472,7 +608,7 @@ export default function App() {
             {/* Playlist Header Card */}
             <div className="glass-panel" style={{
               padding: 28,
-              marginBottom: 24,
+              marginBottom: 20,
               display: 'flex',
               gap: 24,
               alignItems: 'center',
@@ -518,7 +654,7 @@ export default function App() {
                   </p>
                 )}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 16, fontSize: 13, color: 'var(--text-muted)' }}>
-                  <span>{playlist.total_tracks} canciones listadas</span>
+                  <span>{playlist.tracks.length} canciones cargadas</span>
                   <span>•</span>
                   <span>{completedCount} descargadas</span>
                   <span>•</span>
@@ -540,6 +676,46 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {/* Notice if capped at 100 tracks */}
+            {playlist.is_limited && (
+              <div style={{
+                marginBottom: 20,
+                padding: '12px 18px',
+                borderRadius: 12,
+                background: 'rgba(234, 179, 8, 0.1)',
+                border: '1px solid rgba(234, 179, 8, 0.3)',
+                color: '#facc15',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                flexWrap: 'wrap'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                  <Info size={18} style={{ flexShrink: 0 }} />
+                  <span>
+                    Mostrando las primeras <strong>100 canciones</strong> (tope de la consulta pública de Spotify). Para cargar más de 300 canciones, configura tus credenciales gratuitas de desarrollador.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(true)}
+                  style={{
+                    background: '#facc15',
+                    color: '#000',
+                    fontWeight: 700,
+                    fontSize: 12,
+                    padding: '5px 14px',
+                    borderRadius: 9999,
+                    border: 'none',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Desbloquear +100 canciones
+                </button>
+              </div>
+            )}
 
             {/* Selection Toolbar & Filter Bar */}
             <div style={{
@@ -598,6 +774,23 @@ export default function App() {
                 >
                   Primeras 25
                 </button>
+                {playlist.tracks.length > 50 && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectGroup(50)}
+                    style={{
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 9999,
+                      color: 'var(--text-secondary)',
+                      padding: '4px 10px',
+                      fontSize: 12,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Primeras 50
+                  </button>
+                )}
                 {selectedIds.size > 0 && (
                   <button
                     type="button"
@@ -643,8 +836,8 @@ export default function App() {
             <div className="glass-panel" style={{ overflow: 'hidden' }}>
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: '40px 48px 1fr 120px 140px',
-                padding: '12px 20px',
+                gridTemplateColumns: '36px 48px 36px 1fr 100px 130px',
+                padding: '12px 18px',
                 borderBottom: '1px solid var(--border-subtle)',
                 fontSize: 12,
                 fontWeight: 600,
@@ -676,13 +869,25 @@ export default function App() {
                     )}
                   </button>
                 </div>
-                <div>#</div>
+
+                {/* Incremental ID column header */}
+                <div style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>#</div>
+
+                {/* Preview column header */}
+                <div style={{ textAlign: 'center' }}>Demo</div>
+
+                {/* Title & Artist */}
                 <div>Título & Artista</div>
+
+                {/* Duration */}
                 <div style={{ textAlign: 'center' }}>Duración</div>
+
+                {/* Action */}
                 <div style={{ textAlign: 'right' }}>Descarga</div>
               </div>
 
               {filteredTracks.map((track, index) => {
+                const trackNumber = index + 1;
                 const trackState = trackStates[track.id] || { status: 'idle' };
                 const isPlaying = playingTrackId === track.id;
                 const isSelected = selectedIds.has(track.id);
@@ -692,8 +897,8 @@ export default function App() {
                     key={track.id}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '40px 48px 1fr 120px 140px',
-                      padding: '12px 20px',
+                      gridTemplateColumns: '36px 48px 36px 1fr 100px 130px',
+                      padding: '10px 18px',
                       alignItems: 'center',
                       borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
                       backgroundColor: isSelected ? 'rgba(29, 185, 84, 0.04)' : 'transparent',
@@ -721,27 +926,35 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Preview Play Button */}
-                    <div>
+                    {/* Incremental ID (1 to n) */}
+                    <div style={{
+                      textAlign: 'center',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: isPlaying ? '#1ed760' : 'var(--text-muted)'
+                    }}>
+                      {trackNumber}
+                    </div>
+
+                    {/* Dedicated Preview Play Button */}
+                    <div style={{ display: 'flex', justifyContent: 'center' }}>
                       {track.preview_url ? (
                         <button
                           type="button"
                           onClick={() => togglePreview(track)}
                           className="btn-icon"
                           style={{
-                            width: 32,
-                            height: 32,
+                            width: 30,
+                            height: 30,
                             background: isPlaying ? 'var(--spotify-green)' : 'rgba(255, 255, 255, 0.06)',
                             color: isPlaying ? '#000' : '#fff'
                           }}
                           title={isPlaying ? 'Pausar preview' : 'Escuchar preview (30s)'}
                         >
-                          {isPlaying ? <Pause size={14} /> : <Play size={14} style={{ marginLeft: 2 }} />}
+                          {isPlaying ? <Pause size={13} /> : <Play size={13} style={{ marginLeft: 2 }} />}
                         </button>
                       ) : (
-                        <span style={{ color: 'var(--text-muted)', fontSize: 13, paddingLeft: 8 }}>
-                          {index + 1}
-                        </span>
+                        <span style={{ color: 'rgba(255, 255, 255, 0.15)', fontSize: 12 }}>—</span>
                       )}
                     </div>
 
@@ -751,7 +964,7 @@ export default function App() {
                         <img
                           src={track.cover_url}
                           alt={track.title}
-                          style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
+                          style={{ width: 42, height: 42, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
                         />
                       )}
                       <div style={{ minWidth: 0, overflow: 'hidden' }}>
@@ -867,7 +1080,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Floating Batch Control Bar (Active during batch downloading or selection) */}
+      {/* Floating Batch Control Bar */}
       {(batchState !== 'idle' || selectedIds.size > 0) && (
         <div style={{
           position: 'fixed',
@@ -970,7 +1183,6 @@ export default function App() {
               </>
             ) : (
               <>
-                {/* Pausar / Reanudar Button */}
                 {batchState === 'running' ? (
                   <button
                     type="button"
@@ -993,7 +1205,6 @@ export default function App() {
                   </button>
                 )}
 
-                {/* Cancel Button */}
                 <button
                   type="button"
                   onClick={handleCancelBatch}
@@ -1019,7 +1230,7 @@ export default function App() {
         fontSize: 13,
         color: 'var(--text-muted)'
       }}>
-        Desarrollado con React + FastAPI + yt-dlp • Descarga por grupo en formato ZIP • Para uso educativo y personal
+        Desarrollado con React + FastAPI + yt-dlp • Soporta paginación ilimitada • Para uso educativo y personal
       </footer>
     </div>
   );

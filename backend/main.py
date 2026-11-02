@@ -25,6 +25,8 @@ app.add_middleware(
 
 class PlaylistRequest(BaseModel):
     url: str
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
 
 class TrackDownloadRequest(BaseModel):
     title: str
@@ -48,7 +50,11 @@ def get_playlist_info(req: PlaylistRequest):
         raise HTTPException(status_code=400, detail="Debes proporcionar una URL de playlist de Spotify.")
     
     try:
-        data = spotify_service.get_playlist_data(req.url.strip())
+        data = spotify_service.get_playlist_data(
+            req.url.strip(),
+            client_id=req.client_id,
+            client_secret=req.client_secret
+        )
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"No se pudo cargar la playlist: {str(e)}")
